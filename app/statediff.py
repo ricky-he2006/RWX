@@ -12,7 +12,7 @@ import enum
 import re
 import types
 
-_MAX_DEPTH = 12
+_MAX_DEPTH = 80     # deeper than this counts as different (never as equal)
 
 
 class _Cmp:
@@ -40,7 +40,9 @@ class _Cmp:
 
     def _same(self, a, b, depth):
         if depth > _MAX_DEPTH:
-            return True
+            # e.g. a parsed template expression kept on a class: its leaves sit deep. What
+            # cannot be compared is reported as changed.
+            return False
         ta = type(a)
         if ta is str or ta is int or ta is bool or a is None:
             return a == b
@@ -93,20 +95,30 @@ class _Cmp:
                     and self.same(a.keywords, b.keywords, depth + 1)
         except Exception:  # noqa
             pass
+        # instance state: the __dict__ and every slot of the class hierarchy (a subclass
+        # without __slots__ has both)
         da = getattr(a, "__dict__", None)
         db = getattr(b, "__dict__", None)
-        if da is not None and db is not None:
-            return self.same(da, db, depth + 1)
-        sa = getattr(type(a), "__slots__", None)
-        if sa:
-            for s in sa if not isinstance(sa, str) else [sa]:
-                if self.same(getattr(a, s, None), getattr(b, s, None), depth + 1) is False:
-                    return False
-            return True
-        try:
-            return bool(a == b)
-        except Exception:  # noqa
-            return repr(a) == repr(b)
+        slots = []
+        for klass in type(a).__mro__:
+            sa = klass.__dict__.get("__slots__")
+            if sa:
+                slots.extend([sa] if isinstance(sa, str) else sa)
+        if da is None and db is None and not slots:
+            try:
+                return bool(a == b)
+            except Exception:  # noqa
+                return repr(a) == repr(b)
+        if (da is None) != (db is None):
+            return False
+        if da is not None and not self.same(da, db, depth + 1):
+            return False
+        for s in slots:
+            if s in ("__dict__", "__weakref__", "_hash"):
+                continue
+            if not self.same(getattr(a, s, None), getattr(b, s, None), depth + 1):
+                return False
+        return True
 
     def key(self, k):
         tk = type(k)
@@ -115,7 +127,7 @@ class _Cmp:
         if isinstance(k, enum.Enum):
             return ("E", tk.__qualname__, k.name)
         if isinstance(k, type):
-            return ("T", k.__module__, tk.__qualname__)
+            return ("T", k.__module__, k.__qualname__)
         if isinstance(k, tuple):
             return tuple(self.key(x) for x in k)
         if isinstance(k, frozenset):

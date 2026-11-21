@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import functools
 import gzip
 import json
 import os
@@ -101,6 +102,7 @@ def analyze(patch_text: str, repo: Path, M: Map) -> Decision:
     return D
 
 
+@functools.lru_cache(maxsize=256)
 def _read(repo, rel):
     p = repo / rel
     try:
@@ -206,6 +208,11 @@ def _fixture(p, fp, M, D):
         D.reasons.append(f"fixture-unused {p}")
 
 
+# Lines of the pinned commit that fill a process-level cache (the generator's dispatch
+# table, built once per generator class and kept in _DISPATCH_CACHE).
+CACHE_FILL = {"sqlglot/generator.py": [(71, 92), (1003, 1009)]}
+
+
 def _python(p, old_text, new_text, fp, M, D):
     if new_text is None:
         return
@@ -230,6 +237,14 @@ def _python(p, old_text, new_text, fp, M, D):
     imp_lines = M.importlines.get(p, set())
     is_test = p.startswith("tests/")
     n_lines = old_text.count("\n") + 1
+    fill = CACHE_FILL.get(p)
+    if fill and any(lo <= l <= hi for ch in changes for l in range(max(1, ch.lines[0]), min(ch.lines[1], n_lines) + 1)
+                    for lo, hi in fill):
+        # code that runs once per process and whose result every later test reuses: the
+        # per-test coverage only names the test that happened to run it first
+        D.all = True
+        D.reasons.append(f"cache-fill {p}")
+        return
     for ch in changes:
         s, e = ch.lines
         e = min(e, n_lines)     # "to the end of the file" is recorded as a huge line number

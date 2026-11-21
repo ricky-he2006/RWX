@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import resource
 import select
 import signal
@@ -60,6 +61,7 @@ def emit(lines):
 
 
 _TEST = dict(kv.split("=", 1) for kv in os.environ.get("BR_SELFTEST", "").split(",") if "=" in kv)
+UNKNOWN_TESTS: set = set()
 POISON: set = set()       # commits whose analysis killed an earlier attempt: all their tests
 STATIC_ONLY = [False]     # last attempt: no test runs, static candidates only
 _PROGRESS_FD = [None]
@@ -162,7 +164,12 @@ def main():
     M = _pkl(MAP, lambda: Map(MAP))
     MAP_OBJ = M
     if M.tests != nodeids:
-        log("WARNING: map test list differs from tests.json; remapping")
+        # every other map is indexed by the test numbers of the pinned test list: with a
+        # different list only the (remapped) coverage map can be trusted
+        log("WARNING: map test list differs from tests.json; remapping, static candidates only")
+        STATIC_ONLY[0] = True
+        known = set(M.tests)
+        UNKNOWN_TESTS.update(i for i, t in enumerate(nodeids) if t not in known)
         idx = {t: i for i, t in enumerate(nodeids)}
         remap = [idx.get(t) for t in M.tests]
         M.sets = [frozenset(remap[x] for x in s if remap[x] is not None) for s in M.sets]
@@ -178,6 +185,7 @@ def main():
 
     answers = {}
     jobs = []
+    maybe_equiv = {}
     for pf in patches:
         cid = pf.stem
         _progress("A " + cid)
@@ -199,6 +207,14 @@ def main():
                 log(cid, "analyze failed", repr(e))
                 answers[cid] = sorted(all_tests)
                 continue
+            if not D.all and D.files:
+                # only the cheap screen here; the proof itself runs after the tests
+                try:
+                    from equiv import maybe_equivalent
+                    if maybe_equivalent(D.files, REPO):
+                        maybe_equiv[cid] = D.files
+                except Exception as e:  # noqa
+                    log(cid, "equiv screen failed", repr(e))
             if D.all:
                 answers[cid] = sorted(all_tests)
                 log(cid, "ALL", " ".join(D.reasons)[:200])
@@ -297,11 +313,19 @@ def main():
         if _TEST.get("runcrash"):
             os.kill(os.getpid(), signal.SIGKILL)
         run_jobs(jobs, answers, nodeids, ms, deadline)
+    # The proof of equivalence parses much of the checkout, so it is kept for the commits
+    # that still have tests selected. By now this process has sqlglot imported if any
+    # commit was run.
+    pending = {c: f for c, f in maybe_equiv.items() if answers.get(c)}
+    if pending:
+        prove_equivalent(pending, answers)
 
     lines = []
     for pf in patches:
         cid = pf.stem
         sel = answers.get(cid, sorted(all_tests))
+        if UNKNOWN_TESTS:
+            sel = sorted(set(sel) | UNKNOWN_TESTS)   # tests no map knows are always selected
         workers, cost = best_schedule(sel, ms)
         lines.append({"commit": cid, "workers": workers})
     _progress("E")
@@ -627,6 +651,7 @@ def _key_mask(R, lines_by_file):
 
 
 _AK = None
+GEN_INIT_LINE = 1005    # sqlglot/generator.py at the pinned commit: inside Generator.__init__
 
 
 def _attr_mask(R, attrs):
@@ -657,7 +682,8 @@ def _attr_mask(R, attrs):
     return mask
 
 
-def replay_narrow(cands, ch_lines, ms, outside0=None, extra_lines=None, light0=None, pure=False, attrs=None):
+def replay_narrow(cands, ch_lines, ms, outside0=None, extra_lines=None, light0=None, pure=False, attrs=None,
+                  disp=False):
     """Replay the recorded phase inputs under the patched code; drop the candidates whose
     inputs all still produce their baseline output. Returns (candidates, note)."""
     inside, keys, est = replay_scope(cands, ch_lines, outside0, extra_lines)
@@ -687,8 +713,13 @@ def replay_narrow(cands, ch_lines, ms, outside0=None, extra_lines=None, light0=N
             allines.setdefault(f, set()).update(v)
         m1 = _attr_mask(R, attrs)
         m2 = _key_mask(R, allines)
+        # inputs that create a generator (they enter Generator.__init__, where the dispatch
+        # table is looked up)
+        m3 = _key_mask(R, {"sqlglot/generator.py": {GEN_INIT_LINE}}) if disp else 0
+        if disp and not m3:
+            m1 = None       # cannot tell: replay every input of the tests in scope
         if m1 is not None and m2 is not None:
-            mask = m1 | m2
+            mask = m1 | m2 | m3
             tkeys = {t: [k for k in ks if (mask >> k) & 1] for t, ks in tkeys.items()}
             tkeys = {t: ks for t, ks in tkeys.items() if ks}
             inside = [t for t in inside if t in tkeys]
@@ -709,6 +740,20 @@ def replay_narrow(cands, ch_lines, ms, outside0=None, extra_lines=None, light0=N
     t0 = time.time()
     c0 = time.process_time()
     import runner
+    if os.environ.get("BR_REPLAY_DEBUG"):
+        for dt in [int(x) for x in os.environ["BR_REPLAY_DEBUG"].split(",")]:
+            allk = R["tests"].get(dt, [])
+            mk = tkeys.get(dt)
+            res = []
+            for k in allk:
+                try:
+                    ch = replay.run_key(R["keys"][k]) != R["dig"][k]
+                except BaseException as e:  # noqa
+                    ch = repr(e)[:40]
+                if ch:
+                    res.append((k, ch, k in (mk or ()), str(R["keys"][k])[:300]))
+            log("REPLAYDEBUG", dt, "in_cands", dt in cands, "inside", dt in inside, "bad", dt in R["bad"], "keys", len(allk),
+                "masked", None if mk is None else len(mk), "changed(all keys)", res[:6])
     signal.signal(signal.SIGALRM, runner._alarm)
     limit = t0 + 3.0 * est + 5.0
     state = {}   # key -> True when its output differs from the baseline
@@ -1030,6 +1075,149 @@ def _import_all():
     return failed
 
 
+def _modname(rel):
+    name = rel[:-3].replace("/", ".")
+    if name.endswith(".__init__"):
+        name = name[: -len(".__init__")]
+    return name
+
+
+SCOPE_ON = os.environ.get("BR_SCOPE", "0") == "1"
+_IMPORT_RE = re.compile(r"^[ \t]*(?:from[ \t]+([.\w]+)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)|import[ \t]+([^\n]+))", re.M)
+_IMPORT_GRAPH = None
+
+
+def _static_imports(mod, is_pkg, text, known):
+    """sqlglot modules named by any import statement of a module's text (function-level
+    ones too), with the parent packages an import of them also runs."""
+    out = set()
+    pkg = mod if is_pkg else mod.rpartition(".")[0]
+
+    def add(name):
+        while name:
+            if name in known:
+                out.add(name)
+            name = name.rpartition(".")[0]
+
+    for m in _IMPORT_RE.finditer(text):
+        src, names, plain = m.groups()
+        if plain is not None:
+            for part in plain.split("#")[0].split(","):
+                add(part.strip().split(" ")[0])
+            continue
+        if src.startswith("."):
+            dots = len(src) - len(src.lstrip("."))
+            base = pkg
+            for _ in range(dots - 1):
+                base = base.rpartition(".")[0]
+            rest = src[dots:]
+            src = base + "." + rest if rest else base
+        add(src)
+        for part in re.sub(r"#[^\n]*", "", names).strip("()").split(","):
+            part = part.strip().split(" ")[0]
+            if part:
+                add(src + "." + part)
+    add(mod.rpartition(".")[0])
+    out.discard(mod)
+    return out
+
+
+def _import_graph():
+    """module -> sqlglot modules its source imports, at the pinned commit."""
+    global _IMPORT_GRAPH
+    if _IMPORT_GRAPH is None:
+        _preload_src_text()
+        mods = {}
+        for rel, text in _SRC_TEXT.items():
+            if rel.startswith("sqlglot/"):
+                mods[_modname(rel)] = (rel.endswith("/__init__.py"), text)
+        known = set(mods)
+        _IMPORT_GRAPH = {m: _static_imports(m, pk, text, known) for m, (pk, text) in mods.items()}
+    return _IMPORT_GRAPH
+
+
+def _diff_scope(old_mods, new_mods, seeds, files=None):
+    """Modules whose import-time state a change to `seeds` can reach.
+
+    That is the changed modules themselves, anything they import or inherit (their
+    top-level code can write those), and anything that imports them, however far out:
+    an importer can copy or derive a value at import time, and its own importers can do
+    the same with that. None means the comparison should cover every module.
+    """
+    import types
+    if not SCOPE_ON:
+        return None
+    seeds = {s for s in seeds if s in old_mods or s in new_mods}
+    if not seeds:
+        return None
+    graph = dict(_import_graph())
+    known = set(old_mods) | set(new_mods) | set(graph)
+    for rel, text in (files or {}).items():
+        if text is not None and rel.endswith(".py") and rel.startswith("sqlglot/"):
+            m = _modname(rel)
+            graph[m] = graph.get(m, set()) | _static_imports(m, rel.endswith("/__init__.py"), text, known)
+    scope = set(seeds)
+
+    def absorb(mod):
+        if mod is None:
+            return
+        try:
+            vals = list(vars(mod).values())
+        except Exception:  # noqa
+            return
+        for v in vals:
+            if isinstance(v, types.ModuleType) and v.__name__ in known:
+                scope.add(v.__name__)
+            elif isinstance(v, type) and getattr(v, "__module__", None) in known:
+                scope.add(v.__module__)
+        try:
+            import statediff
+            for c in statediff._classes_of(mod):
+                for b in c.__mro__:
+                    m = getattr(b, "__module__", None)
+                    if m in known:
+                        scope.add(m)
+        except Exception:  # noqa
+            pass
+
+    for s in seeds:
+        absorb(new_mods.get(s) or old_mods.get(s))
+        scope |= graph.get(s, set())
+    # importers, by import statement
+    rev = {}
+    for m, deps in graph.items():
+        for d in deps:
+            rev.setdefault(d, set()).add(m)
+    todo = list(seeds)
+    reached = set(seeds)
+    while todo:
+        for m in rev.get(todo.pop(), ()):
+            if m not in reached:
+                reached.add(m)
+                todo.append(m)
+    # holders of a seed's module, class or function (e.g. a package that caches its
+    # lazily loaded members); these are not followed further out
+    for mods in (old_mods, new_mods):
+        for name, mod in mods.items():
+            if name in reached:
+                continue
+            try:
+                vals = list(vars(mod).values())
+            except Exception:  # noqa
+                continue
+            for v in vals:
+                if isinstance(v, types.ModuleType):
+                    d = v.__name__
+                elif isinstance(v, (type, types.FunctionType)):
+                    d = getattr(v, "__module__", None)
+                else:
+                    continue
+                if d in seeds:
+                    scope.add(name)
+                    break
+    return scope | reached
+
+
 def overlay_candidates(j, old_mods, nodeids):
     """After re-importing the changed sqlglot: what changed in import-time state, and
     which tests read it."""
@@ -1059,8 +1247,11 @@ def overlay_candidates(j, old_mods, nodeids):
     sets, byattr, untraced, noise = R
     import statediff
     new_mods = {k: v for k, v in sys.modules.items() if k == "sqlglot" or k.startswith("sqlglot.")}
+    seeds = [_modname(r) for r in j.get("files", {}) if r.endswith(".py") and r.startswith("sqlglot/")]
+    scope = _diff_scope(old_mods, new_mods, seeds, j.get("files"))
     try:
-        delta = [c for c in statediff.diff_state(old_mods, new_mods) if c not in noise]
+        delta = statediff.diff_state(old_mods, new_mods, only=scope)
+        delta = [c for c in delta if c not in noise]
     except Exception as e:  # noqa
         return {"cands": broad | precise, "note": f"diff-failed {e!r}"}
     cands = set(precise)
@@ -1112,7 +1303,7 @@ def overlay_candidates(j, old_mods, nodeids):
                 cands |= refs[1]
                 outside |= refs[1]
                 n_glob += 1
-    note = fail_note + f"delta={len(delta)} {[d[1].split(':')[-1] + '.' + str(d[2]) for d in delta][:3]}"
+    note = fail_note + f"delta={len(delta)} {[d[1].split(':')[-1] + '.' + str(d[2]) for d in delta][:3]} scope={0 if scope is None else len(scope)}"
     if n_glob:
         note += f" globals={n_glob}"
     if unknown:
@@ -1122,7 +1313,30 @@ def overlay_candidates(j, old_mods, nodeids):
             return {"all": True, "note": note + " broad"}
     if delta:
         cands |= untraced & (broad | precise)
-    return {"cands": cands, "note": note, "unknown": bool(unknown), "forced": forced,
+    # A generator class's dispatch table is built once per process from TRANSFORMS and the
+    # *_sql methods and then reused: the per-input attribute trace only saw those reads
+    # for the first input that built it. For such a change every input that creates a
+    # generator counts as a reader.
+    disp = False
+    try:
+        gen_base = old_mods["sqlglot.generator"].Generator
+        for d in delta:
+            if d[0] not in ("cls", "meth"):
+                continue
+            modname, _, qual = d[1].partition(":")
+            obj = old_mods.get(modname)
+            try:
+                for part in (x for x in qual.split(".") if x):
+                    obj = vars(obj)[part]
+                if isinstance(obj, type) and not issubclass(obj, gen_base):
+                    continue
+            except Exception:  # noqa
+                pass
+            disp = True
+            break
+    except Exception:  # noqa
+        disp = True
+    return {"cands": cands, "note": note, "unknown": bool(unknown), "forced": forced, "disp": disp,
             "pure": all(d[0] == "methcode" for d in delta) and not forced,
             "replay_ok": bool(OR) and not unknown, "outside": outside, "fn_lines": fn_lines,
             "attrs": sorted({(d[1], d[2]) for d in delta if d[0] in ("cls", "meth")})}
@@ -1207,6 +1421,22 @@ MAP_OBJ = None
 OLD_IMPORT_FAILURES = []
 
 
+def prove_equivalent(maybe_equiv, answers):
+    """Answer the commits whose edit provably changes no behavior with no test at all."""
+    try:
+        from equiv import proven_equivalent
+    except Exception as e:  # noqa
+        log("equiv unavailable", repr(e))
+        return
+    for cid, files in maybe_equiv.items():
+        try:
+            if proven_equivalent(files, REPO):
+                answers[cid] = []
+                log(cid, "none equiv")
+        except Exception as e:  # noqa
+            log(cid, "equiv check failed", repr(e))
+
+
 def run_jobs(jobs, answers, nodeids, ms, deadline):
     import runner
 
@@ -1225,6 +1455,7 @@ def run_jobs(jobs, answers, nodeids, ms, deadline):
         load_reads()
         load_imports()
         _preload_src_text()
+        _import_graph()
     if os.environ.get("BR_PRESET", "1") == "1":
         # executor tests wanted by at least two commits: load their class fixtures once
         want = 0
@@ -1494,7 +1725,8 @@ def _child(j, nodeids, ms, runner, modules):
         if res.get("replay_ok") and j.get("pure_src"):
             cands, rn = replay_narrow(cands, j.get("ch_lines"), ms, res.get("outside"), res.get("fn_lines"),
                                       light0=() if len(cands) > 300 else None, pure=bool(res.get("pure")),
-                                      attrs=None if res.get("pure") else res.get("attrs"))
+                                      attrs=None if res.get("pure") else res.get("attrs"),
+                                      disp=bool(res.get("disp", True)))
             note += rn
             if HANG[0]:
                 return {"failed": [], "unrun": sorted(cands), "note": note + " " + res["note"]}

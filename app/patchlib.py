@@ -336,7 +336,7 @@ def _parse_old(src):
     """Parsed tree of an unpatched file; the same file is diffed for many commits."""
     t = _PARSED.get(src)
     if t is None:
-        if len(_PARSED) > 6:
+        if len(_PARSED) > 256:
             _PARSED.clear()
         t = _PARSED[src] = ast.parse(src)
     return t
