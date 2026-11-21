@@ -16,20 +16,16 @@ jobs:
           set -eu
           uname -m
           lscpu | head -30
-          for ref in 13c83c661aa9 cdcc32c32e03 e422be6 60d182878a4f; do
+          for ref in 13c83c661aa9 cdcc32c32e03 b1aa23ed8d88 60d182878a4f; do
             git worktree add --detach "/tmp/$ref" "$ref"
             timeout 600 docker build --platform linux/amd64 "/tmp/$ref" -t "br-$ref"
           done
           mkdir -p /tmp/base
-          cid=$(docker create br-e422be6)
+          cid=$(docker create br-60d182878a4f)
           docker cp "$cid:/opt/sqlglot/." /tmp/base
           docker rm "$cid"
           mkdir results
-          for seed in 1301 1302; do
-            p=/tmp/seed-$seed
-            python3 tools/genmutants.py /tmp/base "$p/commits" 30 "$seed"
-            install -m 644 sample/tests.json "$p/tests.json"
-          done
+          python3 tools/calibration_stress.py /tmp/base /tmp/stress
           python3 tools/calibration_measure.py results
       - uses: actions/upload-artifact@v4
         if: always()
