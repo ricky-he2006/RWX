@@ -19,7 +19,7 @@ _, status = os.waitpid(pid,0)
 print('CPU_US', cpu()-before, file=sys.stderr)
 sys.exit(os.waitstatus_to_exitcode(status))
 """
-refs = ['60d182878a4f', '6e677c713810']
+refs = ['60d182878a4f', 'ad1a0e9919e2']
 for batch in ['stress', 'throttled']:
     data = Path('/tmp/stress')
     for run in range(3):

@@ -16,12 +16,12 @@ jobs:
           set -eu
           uname -m
           lscpu | head -30
-          for ref in 60d182878a4f 6e677c713810; do
+          for ref in 60d182878a4f ad1a0e9919e2; do
             git worktree add --detach "/tmp/$ref" "$ref"
             timeout 600 docker build --platform linux/amd64 "/tmp/$ref" -t "br-$ref"
           done
           mkdir -p /tmp/base
-          cid=$(docker create br-6e677c713810)
+          cid=$(docker create br-ad1a0e9919e2)
           docker cp "$cid:/opt/sqlglot/." /tmp/base
           docker rm "$cid"
           mkdir results
