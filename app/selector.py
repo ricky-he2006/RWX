@@ -858,10 +858,10 @@ def cpu_of(t, ms):
 
 
 OV_MULT = float(os.environ.get("BR_OV_MULT", "1.6"))
-MAX_CHILD_CPU = float(os.environ.get("BR_MAX_CHILD", "20"))
+MAX_CHILD_CPU = float(os.environ.get("BR_MAX_CHILD", "1.5"))
 BROAD_CANDS = int(os.environ.get("BR_BROAD_CANDS", "400"))
 BROAD_FAILS = int(os.environ.get("BR_BROAD", "3"))
-HEAVY_CPU = float(os.environ.get("BR_HEAVY_CPU", "1.0"))
+HEAVY_CPU = float(os.environ.get("BR_HEAVY_CPU", "0.4"))
 FIX_PFAIL = float(os.environ.get("BR_FIX_PFAIL", "0.9"))
 P_EQUIV = float(os.environ.get("BR_P_EQUIV", "0.6"))
 LATE_MARGIN = float(os.environ.get("BR_LATE_MARGIN", "1.2"))

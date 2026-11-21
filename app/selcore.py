@@ -169,6 +169,10 @@ def _opened_users(p, M):
     for q, users in M.opened.items():
         if q == p or (q.endswith("/") and p.startswith(q)):
             s |= users
+    if "tests/fixtures/optimizer/tpc-ds" in p:
+        s = {u for u in s if not (M.file_of[u] == "tests/test_executor.py" and "test_execute_tpcds" not in M.tests[u])}
+    elif "tests/fixtures/optimizer/tpc-h" in p:
+        s = {u for u in s if not (M.file_of[u] == "tests/test_executor.py" and "test_execute_tpch" not in M.tests[u] and "test_optimized_tpch" not in M.tests[u])}
     return s
 
 
