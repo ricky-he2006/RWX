@@ -1443,6 +1443,8 @@ def _child(j, nodeids, ms, runner, modules):
     runner.ITER_FILTER.clear()
     runner.ITER_FILTER.update({int(t): set(v) for t, v in (j.get("iterf") or {}).items()})
     runner.MEMO_DUCK = bool(j.get("memo_duck")) and runner.MEMO is not None
+    if runner.MEMO_DUCK and all(p.startswith("tests/fixtures/") and p.endswith(".sql") for p in j["files"]):
+        runner.FIXTURE_CALLS = runner.MEMO.get("pool_results")
     runner.MEMO_SKIP.clear()
     runner.MEMO_SKIP.update(j.get("memo_skip") or [])
     tempfile.tempdir = j["tmp"]

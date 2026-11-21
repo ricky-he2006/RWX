@@ -26,7 +26,7 @@ import sqlglot.executor as E  # noqa: E402
 import tests.test_executor as T  # noqa: E402
 
 REPO = os.path.realpath(runner.REPO) + os.sep
-rec = {"duck": {}, "dsql": {}, "opt": {}, "rlines": {}, "tpch": {}}
+rec = {"pool_results": {}, "duck": {}, "dsql": {}, "opt": {}, "rlines": {}, "tpch": {}}
 runner.MEMO_REC = rec
 runner.MEMO_IDS = dict(enumerate(IDS))
 runner.SUBMIT_LAZY = {0, 1}

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import builtins
 import gc
+import hashlib
 import importlib
 import io
 import json
@@ -36,8 +37,14 @@ class InlineExecutor:
     """Runs submitted work synchronously, with a pickle round trip like a real pool."""
 
     def __init__(self, max_workers=None, mp_context=None, initializer=None, initargs=(), **kw):
+        self.input_digest = None
         if initializer:
-            initializer(*pickle.loads(pickle.dumps(initargs)))
+            payload = pickle.dumps(initargs)
+            if (MEMO_REC is not None or FIXTURE_CALLS is not None) and (
+                    getattr(initializer, "__module__", None), getattr(initializer, "__name__", None)
+            ) == ("tests.test_executor", "initializer"):
+                self.input_digest = hashlib.sha256(payload).digest()
+            initializer(*pickle.loads(payload))
 
     def submit(self, fn, *a, **k):
         n = _SUB["n"]
@@ -65,7 +72,15 @@ class InlineExecutor:
         f = _LazyFuture()
         f._n = n
         try:
-            f._job = pickle.loads(pickle.dumps((fn, a, k)))
+            payload = pickle.dumps((fn, a, k))
+            if self.input_digest is not None and (getattr(fn, "__module__", None), getattr(fn, "__name__", None)) == ("tests.test_executor", "mp_execute"):
+                key = (self.input_digest, hashlib.sha256(payload).digest())
+                if FIXTURE_CALLS is not None and key in FIXTURE_CALLS:
+                    f.set_result(pickle.loads(FIXTURE_CALLS[key]))
+                    return f
+                if MEMO_REC is not None:
+                    f._record_key = key
+            f._job = pickle.loads(payload)
         except BaseException as e:  # noqa
             f.set_exception(e)
         return f
@@ -102,6 +117,7 @@ def _rearm(done=False):
 #   opt:  test id -> {query index -> digest of the optimized expression}
 #   rlines: test id -> {file: lines run outside parse/optimize/transpile}
 MEMO = None
+FIXTURE_CALLS = None  # successful pool results from the unmodified checkout
 MEMO_IDS: dict = {}     # test number -> test id
 MEMO_DUCK = False       # reuse reference dataframes when the duckdb sql is unchanged
 MEMO_SKIP: set = set()  # tests whose queries may skip execution when their plan is unchanged
@@ -221,6 +237,7 @@ class _LazyFuture(_cf.Future):
     """Runs the submitted call when its result is first asked for. Once the
     running test has a failing subtest, later calls are skipped (the test fails anyway)."""
     _job = None
+    _record_key = None
 
     def _run(self):
         job, self._job = self._job, None
@@ -235,7 +252,10 @@ class _LazyFuture(_cf.Future):
         t0 = time.process_time()
         try:
             try:
-                self.set_result(pickle.loads(pickle.dumps(fn(*a, **k))))
+                result = pickle.dumps(fn(*a, **k))
+                if self._record_key is not None:
+                    MEMO_REC["pool_results"][self._record_key] = result
+                self.set_result(pickle.loads(result))
             except _SkipExec:
                 if _memo_duck_same(self._n):
                     MEMO_STAT[0] += 1
