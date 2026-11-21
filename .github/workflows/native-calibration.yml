@@ -16,7 +16,7 @@ jobs:
           set -eu
           uname -m
           lscpu | head -30
-          for ref in cdcc32c32e03 b1aa23ed8d88 e422be6; do
+          for ref in 13c83c661aa9 cdcc32c32e03 e422be6 60d182878a4f; do
             git worktree add --detach "/tmp/$ref" "$ref"
             timeout 600 docker build --platform linux/amd64 "/tmp/$ref" -t "br-$ref"
           done
@@ -35,32 +35,4 @@ jobs:
         if: always()
         with:
           name: measurements
-          path: results
-  labels:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 55
-    strategy:
-      fail-fast: false
-      max-parallel: 6
-      matrix:
-        seed: [1301,1302]
-        shard: [0,1,2]
-    steps:
-      - uses: actions/checkout@v4
-      - run: |
-          mkdir -p results
-          docker build --target calibration --file - -t calibration . <<'DOCKER'
-          FROM python:3.13-slim@sha256:e48f59cdba69a3cbd9ed2cf0f348d90d45a8d350d98134cf1070bc106ee9ed90 AS calibration
-          COPY requirements.lock /tmp/requirements.lock
-          RUN pip install -r /tmp/requirements.lock
-          DOCKER
-          git init /tmp/base
-          git -C /tmp/base fetch --depth=1 https://github.com/tobymao/sqlglot eb11aec4be8cb2122afe713a4816662c3f0fb2fa
-          git -C /tmp/base checkout --detach FETCH_HEAD
-          python3 tools/genmutants.py /tmp/base /tmp/mutants 30 "${{ matrix.seed }}"
-          docker run --rm --network none -v /tmp/base:/baseline:ro -v /tmp/mutants:/patches:ro -v "$PWD:/project:ro" -v "$PWD/results:/results" -e OPENBLAS_NUM_THREADS=1 -e OMP_NUM_THREADS=1 calibration python /project/tools/calibration_label.py "${{ matrix.shard }}"
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: labels-${{ matrix.seed }}-${{ matrix.shard }}
           path: results

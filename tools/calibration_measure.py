@@ -19,7 +19,7 @@ _, status = os.waitpid(pid,0)
 print('CPU_US', cpu()-before, file=sys.stderr)
 sys.exit(os.waitstatus_to_exitcode(status))
 """
-refs = ['cdcc32c32e03', 'b1aa23ed8d88', 'e422be6']
+refs = ['13c83c661aa9', 'cdcc32c32e03', 'e422be6', '60d182878a4f']
 for batch in ['sample','1301','1302']:
     data = Path('sample').resolve() if batch == 'sample' else Path('/tmp/seed-' + batch)
     for run in range(3):
