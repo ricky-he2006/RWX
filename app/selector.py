@@ -1322,7 +1322,7 @@ DENSE_MIN = float(os.environ.get("BR_DENSE_MIN", "2.0"))
 Q_MAX = float(os.environ.get("BR_Q_MAX", "0.70"))
 Q_PRIOR = float(os.environ.get("BR_Q_PRIOR", "0.5"))
 Q_BETA = float(os.environ.get("BR_Q_BETA", "3.0"))
-RP_MARGIN = float(os.environ.get("BR_RP_MARGIN", "0.60"))
+RP_MARGIN = float(os.environ.get("BR_RP_MARGIN", "0.65"))
 
 
 def plan_split(cands, ms, cpu, overlay, can_diff=False, overhead=None, mult=1.0, base=()):
