@@ -500,7 +500,8 @@ def _python(p, old_text, new_text, fp, M, D, repo=None):
                     for lo, hi in fill):
         # code that runs once per process and whose result every later test reuses: the
         # per-test coverage only names the test that happened to run it first
-        D.all = True
+        D.import_change = True
+        D.cands |= set(range(M.n))
         D.reasons.append(f"cache-fill {p}")
         return
     if p.startswith("sqlglot/") and all(ch.kind == "signature" for ch in changes):
