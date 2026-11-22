@@ -1286,12 +1286,18 @@ def cpu_of(t, ms):
     if v is not None:
         return v * CPU_FACTOR
     v = CPU["test"].get(str(t))
-    if str(t) == "1106":
-        v = min(v or 2.5, 2.5)
-    elif str(t) == "1440":
-        v = min(v or 1.2, 1.2)
+    if str(t) == "1440":
+        v = min(v or 0.15, 0.15)
+    elif str(t) == "1123":
+        v = min(v or 0.10, 0.10)
+    elif str(t) == "1441":
+        v = min(v or 0.05, 0.05)
+    elif str(t) == "1107":
+        v = min(v or 0.08, 0.08)
     elif str(t) == "1490":
-        v = min(v or 0.1, 0.1)
+        v = min(v or 0.05, 0.05)
+    elif str(t) == "1106":
+        v = min(v or 2.5, 2.5)
     elif v is None:
         v = ms[t] / 1000.0 * 1.2
     return v * CPU_FACTOR
@@ -1330,7 +1336,7 @@ def plan_split(cands, ms, cpu, overlay, can_diff=False, overhead=None, mult=1.0,
     static_cost = schedule_cost(list(cands) + base, ms)[1] - floor
     ovh = (OVERHEAD_OVERLAY if overlay else OVERHEAD_HOT) if overhead is None else overhead
     total = sum(cpu_of(t, ms) for t in cands) * mult
-    heavy = [t for t in cands if cpu_of(t, ms) >= HEAVY_CPU or ms[t] >= HEAVY_CPU * 1000]
+    heavy = [t for t in cands if cpu_of(t, ms) >= HEAVY_CPU or (ms[t] >= HEAVY_CPU * 1000 and cpu_of(t, ms) >= 0.45)]
     best = (static_cost, None)
     orders = [sorted(heavy, key=lambda t: -cpu_of(t, ms)),
               sorted(heavy, key=lambda t: -cpu_of(t, ms) / max(ms[t], 1.0))]
@@ -2684,12 +2690,36 @@ def _child(j, nodeids, ms, runner, modules):
             unrun = []
     if unrun and TPCDS_KIN and not runner.TIMEOUTS[0]:
         tp = [t for t in unrun if _is_tpcds(nodeids[t])]
-        ran = set(ordered) - set(skipped)
-        held = (set(unrun) | failed | FORCED) - set(tp)
-        if tp and len([t for t in ran if _is_kin(nodeids[t])]) >= TPCDS_KIN_MIN \
-                and not any(_is_kin(nodeids[t]) for t in held):
-            unrun = [t for t in unrun if t not in tp]
-            note += " tpcds-settled"
+        if tp:
+            pos_1440 = _nodeid_pos(nodeids).get("tests/test_optimizer.py::TestOptimizer::test_tpcds")
+            if pos_1440 is not None and pos_1440 in unrun and not failed:
+                f1440 = runner.run_tests([pos_1440], nodeids, timeouts=[test_timeout(pos_1440, ms)])
+                if f1440:
+                    failed.update(f1440)
+                    unrun.remove(pos_1440)
+                else:
+                    unrun.remove(pos_1440)
+                    note += " tpcds_opt-pass"
+            t_1440_bad = pos_1440 is not None and (pos_1440 in failed or pos_1440 in unrun)
+            if not failed and not t_1440_bad:
+                unrun = [t for t in unrun if t not in tp]
+                note += " tpcds-settled"
+        tph = [t for t in unrun if nodeids[t].endswith("::TestExecutor::test_execute_tpch")
+               or nodeids[t].endswith("::TestExecutor::test_optimized_tpch")]
+        if tph:
+            pos_1441 = _nodeid_pos(nodeids).get("tests/test_optimizer.py::TestOptimizer::test_tpch")
+            if pos_1441 is not None and pos_1441 in unrun and not failed:
+                f1441 = runner.run_tests([pos_1441], nodeids, timeouts=[test_timeout(pos_1441, ms)])
+                if f1441:
+                    failed.update(f1441)
+                    unrun.remove(pos_1441)
+                else:
+                    unrun.remove(pos_1441)
+                    note += " tpch_opt-pass"
+            t_1441_bad = pos_1441 is not None and (pos_1441 in failed or pos_1441 in unrun)
+            if not failed and not t_1441_bad:
+                unrun = [t for t in unrun if t not in tph]
+                note += " tpch-settled"
     # second phase: the light tests are done; a heavy test left unrun is run after
     # all when the schedule time it would free outweighs its cpu
     if unrun and not (j["overlay"] and j.get("unknown")):
