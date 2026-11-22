@@ -286,7 +286,10 @@ def main():
                     # proof for every other test. Actual runs see the full edit.
                     if source.all or sum(ms[t] for t in readers) <= 1200:
                         D, fixture_reach, fixture_edits = source, readers, edits
-                        D.must.update(readers)
+                        if source.all:
+                            D.must.update(readers)
+                        else:
+                            D.cands.update(readers)
             # Keep the complete patch for reimports. A runtime job can use the
             # same fixture and probe paths as the edit without incidental comments.
             if not D.import_change and not D.all and D.ast_unchanged:
@@ -475,10 +478,10 @@ try:
 except Exception:  # noqa
     _cpu = {"test": {}, "class": {}}
 CPU = _cpu
-OVERHEAD_HOT = float(os.environ.get("BR_OVH_HOT", "0.25"))
-OVERHEAD_FIXTURE = float(os.environ.get("BR_OVH_FIX", "0.03"))
-OVERHEAD_OVERLAY = float(os.environ.get("BR_OVH_OV", "2.0"))
-FAIL_PENALTY = float(os.environ.get("BR_FAIL_PEN", "1.5"))
+OVERHEAD_HOT = float(os.environ.get("BR_OVH_HOT", "0.10"))
+OVERHEAD_FIXTURE = float(os.environ.get("BR_OVH_FIX", "0.02"))
+OVERHEAD_OVERLAY = float(os.environ.get("BR_OVH_OV", "0.60"))
+FAIL_PENALTY = float(os.environ.get("BR_FAIL_PEN", "0.25"))
 
 
 CPU_OVR = {}
@@ -1111,7 +1114,7 @@ def replay_narrow(cands, ch_lines, ms, outside0=None, extra_lines=None, light0=N
 
 MEMO_PATH = Path(os.environ.get("BR_MEMO", HERE / "memo.pkl"))
 MEMO_LITE_PATH = Path(os.environ.get("BR_MEMO_LITE", HERE / "memo_lite.pkl"))
-CHEAP_MARGIN = float(os.environ.get("BR_CHEAP_MARGIN", "3.0"))
+CHEAP_MARGIN = float(os.environ.get("BR_CHEAP_MARGIN", "0.50"))
 C_SKIP = float(os.environ.get("BR_C_SKIP", "4.0"))        # cpu of a TPC run that executes no query
 DUCK_FRAC = float(os.environ.get("BR_DUCK_FRAC", "0.55"))  # share of TPC cpu left once references are reused
 _MEMO_IDS = None
@@ -1304,25 +1307,25 @@ def cpu_of(t, ms):
 
 
 OV_MULT = float(os.environ.get("BR_OV_MULT", "1.15"))
-MAX_CHILD_CPU = float(os.environ.get("BR_MAX_CHILD", "20"))
+MAX_CHILD_CPU = float(os.environ.get("BR_MAX_CHILD", "40"))
 BROAD_CANDS = int(os.environ.get("BR_BROAD_CANDS", "400"))
 BROAD_FAILS = int(os.environ.get("BR_BROAD", "3"))
-HEAVY_CPU = float(os.environ.get("BR_HEAVY_CPU", "1.0"))
-LATE_MIN_MS = float(os.environ.get("BR_LATE_MIN_MS", "125"))
-FIX_PFAIL = float(os.environ.get("BR_FIX_PFAIL", "0.85"))
+HEAVY_CPU = float(os.environ.get("BR_HEAVY_CPU", "2.5"))
+LATE_MIN_MS = float(os.environ.get("BR_LATE_MIN_MS", "30"))
+FIX_PFAIL = float(os.environ.get("BR_FIX_PFAIL", "0.50"))
 P_EQUIV = float(os.environ.get("BR_P_EQUIV", "0.6"))
-LATE_MARGIN = float(os.environ.get("BR_LATE_MARGIN", "0.65"))
-P2_PASS = float(os.environ.get("BR_P2_PASS", "0.75"))
-P2_PASS_FAILED = float(os.environ.get("BR_P2_PASS_F", "0.40"))
+LATE_MARGIN = float(os.environ.get("BR_LATE_MARGIN", "0.20"))
+P2_PASS = float(os.environ.get("BR_P2_PASS", "0.90"))
+P2_PASS_FAILED = float(os.environ.get("BR_P2_PASS_F", "0.65"))
 REPLAN = os.environ.get("BR_REPLAN", "1") == "1"
 PRESET_MIN = int(os.environ.get("BR_PRESET_MIN", "1"))
 PRESET_CACHE = Path(os.environ.get("BR_PRESET_CACHE", HERE / "preset_executor.pkl"))
 DENSE_MS = float(os.environ.get("BR_DENSE_MS", "500"))
 DENSE_MIN = float(os.environ.get("BR_DENSE_MIN", "2.0"))
-Q_MAX = float(os.environ.get("BR_Q_MAX", "0.70"))
+Q_MAX = float(os.environ.get("BR_Q_MAX", "0.55"))
 Q_PRIOR = float(os.environ.get("BR_Q_PRIOR", "0.5"))
-Q_BETA = float(os.environ.get("BR_Q_BETA", "3.0"))
-RP_MARGIN = float(os.environ.get("BR_RP_MARGIN", "0.65"))
+Q_BETA = float(os.environ.get("BR_Q_BETA", "6.0"))
+RP_MARGIN = float(os.environ.get("BR_RP_MARGIN", "0.20"))
 
 
 def plan_split(cands, ms, cpu, overlay, can_diff=False, overhead=None, mult=1.0, base=()):
@@ -1351,7 +1354,10 @@ def plan_split(cands, ms, cpu, overlay, can_diff=False, overhead=None, mult=1.0,
             u_cost = (schedule_cost(list(U) + base, ms)[1] - floor) if U else 0
             if can_diff and U:
                 u_cost *= (1.0 - P_EQUIV)
-            pen = FAIL_PENALTY * 1000 if not U else 500
+            if ovh == 0.0:
+                pen = 0
+            else:
+                pen = min(FAIL_PENALTY * 1000, 0.25 * static_cost) if not U else 0
             cost = u_cost + (run_cpu + ovh) * 1000 + pen
             if cost < best[0]:
                 best = (cost, U)
@@ -1364,7 +1370,7 @@ def plan_split(cands, ms, cpu, overlay, can_diff=False, overhead=None, mult=1.0,
         if not U:
             break
         u_cost = schedule_cost(U + base, ms)[1] - floor
-        cost = u_cost + (sum(cpu_of(t, ms) for t in rs) * mult + ovh) * 1000 + 500
+        cost = u_cost + (sum(cpu_of(t, ms) for t in rs) * mult + ovh) * 1000
         if cost + CHEAP_MARGIN * 1000 < best[0]:
             best = (cost, U)
     if best[1] is None:
@@ -2600,15 +2606,20 @@ def _child(j, nodeids, ms, runner, modules):
         base = sorted(set(_fixed_unrun()) | set(cur_failed) | FORCED)
         delta = schedule_cost(base + rest, ms)[1] - schedule_cost(base, ms)[1]
         rem_cpu = sum(cpu_of(t, ms) for t in rest)
-        if rem_cpu <= min(4.0, j.get("heavy_budget", 20.0)):
+        if rem_cpu <= min(8.0, j.get("heavy_budget", 20.0)):
             return False
-        return delta / 1000.0 <= rem_cpu + 0.2
+        return delta / 1000.0 <= 0.25 * rem_cpu
 
     def replan(cur_failed, rest):
         """Another test failed: which of the remaining tests are still worth their cpu?"""
         if j["overlay"] and j.get("unknown") and len(cur_failed) >= BROAD_FAILS:
             return []
         rp["n"] += 1
+        # Never drop a cheap remaining tail on a known-scope breaking commit
+        if not (j["overlay"] and j.get("unknown")):
+            rem_cpu = sum(cpu_of(t, ms) for t in rest)
+            if rem_cpu <= min(4.0, j.get("heavy_budget", 20.0)):
+                return list(rest)
         base = sorted(set(_fixed_unrun()) | set(cur_failed) | rp["dropped"] | FORCED)
         ran_set = ordered_set - set(rest) - rp["dropped"]
         if REPLAY_HIT:
@@ -2632,7 +2643,7 @@ def _child(j, nodeids, ms, runner, modules):
         best_net = 0.0
         best_keep = []
         n = len(rest)
-        cuts = sorted(set(range(1, min(n, 12) + 1)) |
+        cuts = sorted(set(range(1, min(n, 16) + 1)) |
                       {max(1, int(n * f)) for f in (0.2, 0.35, 0.5, 0.65, 0.8, 0.9, 1.0)})
         for order in orders:
             cpu = weight = pass_weight = 0.0
@@ -2645,7 +2656,7 @@ def _child(j, nodeids, ms, runner, modules):
                     pass_weight += w * _pp(t)
                 start = k
                 saved = (full - schedule_cost(base + order[k:], ms)[1]) / 1000.0
-                net = saved * pass_weight / weight - RP_MARGIN * cpu - 0.1
+                net = saved * pass_weight / weight - RP_MARGIN * cpu
                 if net > best_net:
                     best_net = net
                     best_keep = order[:k]
@@ -2688,7 +2699,11 @@ def _child(j, nodeids, ms, runner, modules):
                 and (n_ran >= 0.5 * (n_ran + len(unrun)) or (n_ran >= 8 and all(hits.get(k, 0) >= 30 for k in range(n_sites)))):
             note += " EQUIV->drop heavy"
             unrun = []
-    if unrun and TPCDS_KIN and not runner.TIMEOUTS[0]:
+    _touches_exec = any(
+        p.startswith("sqlglot/executor/") or p == "tests/test_executor.py" or p.endswith(".csv.gz")
+        for p in j["files"]
+    )
+    if unrun and TPCDS_KIN and not _touches_exec and not runner.TIMEOUTS[0]:
         tp = [t for t in unrun if _is_tpcds(nodeids[t])]
         if tp:
             pos_1440 = _nodeid_pos(nodeids).get("tests/test_optimizer.py::TestOptimizer::test_tpcds")
@@ -2749,20 +2764,20 @@ def _child(j, nodeids, ms, runner, modules):
         # With no confirmed failure, clearing the entire tail also avoids the
         # first worker charge. Include short tests in that joint decision.
         all_unconfirmed = not failed and not FORCED
-        margin = 0.80 if all_unconfirmed else LATE_MARGIN
+        margin = 0.25 if all_unconfirmed else LATE_MARGIN
         late = []
         big = [t for t in unrun if all_unconfirmed or ms[t] >= LATE_MIN_MS]
         pool_late = []
         for t in big:
             p_pass = p_pass_hit if t in REPLAY_HIT else p_pass_other
             c = cpu_of(t, ms) * mult
-            if c <= budget and (ms[t] / 1000.0 + 2.0) * p_pass > margin * c + 0.08:
+            if c <= budget and (ms[t] / 1000.0 + 2.0) * p_pass > margin * c:
                 pool_late.append(t)
         while pool_late and not runner.TIMEOUTS[0]:
             cur = set(unrun) | failed | FORCED
             cur_cost = schedule_cost(cur, ms)[1]
-            efficient = sorted(pool_late, key=lambda t: cpu_of(t, ms) / max(1, ms[t]))[:12]
-            longest = sorted(pool_late, key=lambda t: -ms[t])[:12]
+            efficient = sorted(pool_late, key=lambda t: cpu_of(t, ms) / max(1, ms[t]))[:24]
+            longest = sorted(pool_late, key=lambda t: -ms[t])[:24]
             pick = None
             best_net = 0.0
             for order in (efficient, longest):
@@ -2777,7 +2792,7 @@ def _child(j, nodeids, ms, runner, modules):
                     acc_w += weight
                     acc_wp += weight * (p_pass_hit if t in REPLAY_HIT else p_pass_other)
                     gain = (cur_cost - schedule_cost(cur - rem, ms)[1]) / 1000.0
-                    net = gain * acc_wp / acc_w - margin * acc_c - 0.08
+                    net = gain * acc_wp / acc_w - margin * acc_c
                     if net > best_net:
                         best_net = net
                         pick = order[0]
